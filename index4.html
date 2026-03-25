@@ -1,0 +1,1535 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <title>外科手消毒智能监测系统（视频流卡住紧急修复版）</title>
+
+  <!-- 按你要求的稳定 CDN 加载顺序（核心依赖 -> pose -> hands） -->
+  <!-- 说明：这里依旧用“动态加载+备用CDN回退”，并在所有脚本加载完成后才初始化模型。 -->
+
+  <style>
+    :root{
+      --blue:#007bff;
+      --ok:#28a745;
+      --warn:#dc3545;
+      --bg:#eef5ff;
+      --panel:#ffffff;
+      --line:#dce6f5;
+      --shadow:0 10px 28px rgba(16,43,82,0.12);
+      --radius:14px;
+    }
+    *{ box-sizing:border-box; margin:0; padding:0; }
+    body{
+      font-family:"Microsoft YaHei","PingFang SC","Noto Sans SC",Arial,sans-serif;
+      background:var(--bg);
+      color:#1f2d3d;
+      height:100vh;
+      overflow:hidden;
+    }
+
+    .topbar{
+      height:78px;
+      padding:12px 14px;
+      display:grid;
+      grid-template-columns: 1.3fr 0.8fr 1fr 1.1fr;
+      gap:12px;
+      align-items:center;
+      color:#fff;
+      background:linear-gradient(90deg,#007bff,#4aa3ff);
+      box-shadow:var(--shadow);
+      position:relative;
+      z-index:10;
+    }
+    .title{
+      font-size:20px;
+      font-weight:1000;
+      white-space:nowrap;
+      overflow:hidden;
+      text-overflow:ellipsis;
+    }
+    .badge{
+      border-radius:999px;
+      padding:10px 14px;
+      font-size:14px;
+      font-weight:1000;
+      background:rgba(255,255,255,0.18);
+      border:1px solid rgba(255,255,255,0.28);
+      white-space:nowrap;
+      display:flex;
+      align-items:center;
+      justify-content:center;
+    }
+    .badge.ok{ background:rgba(40,167,69,0.22); }
+    .badge.warn{ background:rgba(220,53,69,0.22); }
+    .badge.done{ background:rgba(255,193,7,0.22); }
+
+    .stepsWrap{
+      display:flex;
+      align-items:center;
+      justify-content:flex-end;
+      gap:10px;
+      flex-wrap:wrap;
+    }
+    .dots{
+      display:flex;
+      gap:6px;
+      align-items:center;
+      background:rgba(255,255,255,0.14);
+      border:1px solid rgba(255,255,255,0.22);
+      padding:8px 10px;
+      border-radius:999px;
+    }
+    .dot{
+      width:12px; height:12px; border-radius:50%;
+      background:rgba(255,255,255,0.35);
+      border:1px solid rgba(255,255,255,0.55);
+      cursor:pointer;
+    }
+    .dot.done{
+      background:rgba(40,167,69,0.95);
+      border-color:rgba(255,255,255,0.7);
+    }
+    .dot.manual{ outline:2px solid rgba(255,255,255,0.65); outline-offset:1px; }
+
+    .content{
+      height:calc(100vh - 78px);
+      display:grid;
+      grid-template-columns: 7fr 3fr;
+      gap:12px;
+      padding:12px;
+      min-height:0;
+    }
+
+    .panel{
+      background:var(--panel);
+      border:1px solid var(--line);
+      border-radius:var(--radius);
+      box-shadow:var(--shadow);
+      overflow:hidden;
+      min-height:0;
+    }
+
+    .videoPanel{
+      display:grid;
+      grid-template-rows: 1fr auto;
+    }
+
+    .videoWrap{
+      position:relative;
+      background:#000;
+      margin:10px;
+      border-radius:12px;
+      overflow:hidden;
+      border:6px solid var(--ok);
+    }
+    .videoWrap.violation{
+      border-color:var(--warn);
+      animation: flash 0.8s infinite alternate;
+    }
+    @keyframes flash{
+      from{ border-color:#ff4254; }
+      to{ border-color:#ff9ca5; }
+    }
+
+    video{
+      position:absolute;
+      inset:0;
+      width:100%;
+      height:100%;
+      object-fit:cover;
+      transform:scaleX(-1); /* 镜像便于自我观察 */
+    }
+
+    .overlay{
+      position:absolute;
+      left:12px;
+      top:12px;
+      z-index:3;
+      display:flex;
+      flex-direction:column;
+      gap:10px;
+      pointer-events:none;
+      max-width:92%;
+    }
+    .line{
+      background:rgba(0,0,0,0.55);
+      color:#fff;
+      border-radius:12px;
+      padding:10px 12px;
+      font-size:13px;
+      font-weight:1000;
+      line-height:1.35;
+      white-space:pre-line;
+    }
+    .warnLine{ display:none; background:rgba(220,53,69,0.92); }
+
+    .controls{
+      padding:0 10px 12px 10px;
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      gap:10px;
+      flex-wrap:wrap;
+    }
+    .btns{ display:flex; gap:10px; flex-wrap:wrap; align-items:center; }
+    .btn, select{
+      border:1px solid #b8d3fb;
+      background:#fff;
+      color:#11407f;
+      border-radius:12px;
+      padding:10px 14px;
+      font-size:14px;
+      font-weight:1000;
+      cursor:pointer;
+      user-select:none;
+    }
+    .btn-primary{ background:var(--blue); color:#fff; border-color:#006ae0; }
+    .btn-danger{ background:var(--warn); color:#fff; border-color:#bf2d3b; }
+    .btn:disabled{ opacity:0.62; cursor:not-allowed; }
+
+    select{ padding:10px 12px; }
+
+    /* 违规列表 */
+    .sideHead{
+      padding:12px 14px;
+      background:#f4f9ff;
+      border-bottom:1px solid var(--line);
+      font-weight:1000;
+      color:#0f4b93;
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      gap:10px;
+    }
+    .sideHead small{ font-weight:900; color:#53729b; }
+    .list{
+      list-style:none;
+      padding:10px;
+      overflow:auto;
+      height:100%;
+    }
+    .empty{
+      color:#6c7a89;
+      font-size:14px;
+      padding:10px;
+      line-height:1.7;
+      border:1px dashed rgba(0,123,255,0.25);
+      border-radius:12px;
+      background:#fbfdff;
+    }
+    .item{
+      border:1px solid #f2b8be;
+      border-radius:12px;
+      margin-bottom:10px;
+      background:#fff5f6;
+      overflow:hidden;
+    }
+    .head{
+      padding:10px 12px;
+      display:flex;
+      justify-content:space-between;
+      align-items:flex-start;
+      gap:10px;
+      cursor:pointer;
+      user-select:none;
+    }
+    .type{ color:#9a1e2a; font-weight:1000; font-size:14px; line-height:1.3; }
+    .meta{ margin-top:4px; font-size:12px; color:#6c7a89; white-space:nowrap; }
+    .body{
+      display:none;
+      padding:10px 12px;
+      background:#fff;
+      border-top:1px dashed #efb2b9;
+      font-size:13px;
+      line-height:1.7;
+      color:#5b3337;
+      white-space:pre-wrap;
+    }
+    .item.open .body{ display:block; }
+
+    /* 加载层 */
+    .mask{
+      position:fixed;
+      inset:0;
+      display:none;
+      align-items:center;
+      justify-content:center;
+      padding:16px;
+      background:rgba(8,24,45,0.72);
+      z-index:50;
+    }
+    .card{
+      width:min(860px,96vw);
+      background:#fff;
+      border:1px solid var(--line);
+      border-radius:14px;
+      box-shadow:var(--shadow);
+      padding:16px;
+    }
+    .card h3{
+      margin:0 0 10px 0;
+      font-size:18px;
+      font-weight:1000;
+      color:#1557a0;
+    }
+    .barWrap{
+      background:#eaf2ff;
+      border:1px solid #d2e5ff;
+      border-radius:999px;
+      height:14px;
+      overflow:hidden;
+      margin-bottom:10px;
+    }
+    .bar{
+      width:0%;
+      height:100%;
+      background:linear-gradient(90deg,#007bff,#5ab0ff);
+      transition:width .25s ease;
+    }
+    .ptext{
+      font-size:14px;
+      font-weight:1000;
+      color:#3a4a5f;
+      margin-bottom:10px;
+      white-space:pre-line;
+    }
+    .log{
+      background:#0d1f34;
+      color:#cde3ff;
+      border-radius:12px;
+      padding:10px;
+      font-size:12px;
+      line-height:1.6;
+      max-height:34vh;
+      overflow:auto;
+      white-space:pre-wrap;
+    }
+    .actions{
+      margin-top:10px;
+      display:flex;
+      justify-content:flex-end;
+      gap:10px;
+      flex-wrap:wrap;
+    }
+
+    /* 弹窗 */
+    .modalMask{
+      position:fixed;
+      inset:0;
+      display:none;
+      align-items:center;
+      justify-content:center;
+      padding:16px;
+      background:rgba(8,24,45,0.62);
+      z-index:60;
+    }
+    .modal{
+      width:min(920px,96vw);
+      background:#fff;
+      border:1px solid var(--line);
+      border-radius:14px;
+      box-shadow:var(--shadow);
+      overflow:hidden;
+    }
+    .mHead{
+      padding:12px 16px;
+      background:#eef6ff;
+      border-bottom:1px solid var(--line);
+      color:#0f4b93;
+      font-weight:1000;
+      font-size:18px;
+    }
+    .mBody{
+      padding:16px;
+      max-height:70vh;
+      overflow:auto;
+      color:#27405f;
+      line-height:1.8;
+      font-size:14px;
+      white-space:pre-wrap;
+    }
+    .mFoot{
+      padding:12px 16px;
+      border-top:1px solid var(--line);
+      display:flex;
+      justify-content:flex-end;
+      gap:10px;
+      flex-wrap:wrap;
+    }
+
+    .grid2{
+      display:grid;
+      grid-template-columns: 1fr 1fr;
+      gap:12px;
+    }
+    .check{
+      border:1px solid #d9eaff;
+      background:#f6faff;
+      border-radius:12px;
+      padding:12px;
+      display:flex;
+      gap:10px;
+      align-items:flex-start;
+    }
+    .check input{ transform:translateY(2px); }
+    .check b{ font-weight:1000; }
+    .note{
+      margin-top:6px;
+      font-size:13px;
+      color:#5c6f84;
+      font-weight:700;
+    }
+
+    @media (max-width: 980px){
+      body{ overflow:auto; }
+      .topbar{ height:auto; grid-template-columns: 1fr; gap:8px; }
+      .content{ height:auto; grid-template-columns: 1fr; }
+      .videoWrap{ height:58vh; }
+      .stepsWrap{ justify-content:flex-start; }
+      .grid2{ grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+
+<body>
+  <div class="topbar">
+    <div class="title">护理外科手消毒智能监测系统（修复版：持续流 + rAF 循环）</div>
+
+    <div id="timerBadge" class="badge">倒计时：05:00</div>
+    <div id="stateBadge" class="badge ok">状态：待开始</div>
+
+    <div class="stepsWrap">
+      <div style="font-weight:1000;font-size:14px;white-space:nowrap;">七步进度</div>
+      <div class="dots" id="dots"></div>
+    </div>
+  </div>
+
+  <div class="content">
+    <section class="panel videoPanel">
+      <div id="videoWrap" class="videoWrap">
+        <video id="video" playsinline muted autoplay></video>
+        <div class="overlay">
+          <div id="overlayStatus" class="line">系统启动中：加载依赖…</div>
+          <div id="overlayWarn" class="line warnLine"></div>
+        </div>
+      </div>
+
+      <div class="controls">
+        <div class="btns">
+          <button id="btnPreChecklist" class="btn">操作前自检清单</button>
+          <button id="btnStart" class="btn btn-primary">开始检测</button>
+          <button id="btnStop" class="btn btn-danger" disabled>手动结束</button>
+        </div>
+        <div style="display:flex; gap:10px; align-items:center;">
+          <select id="cameraSelect" title="选择摄像头">
+            <option value="environment" selected>后置摄像头</option>
+            <option value="user">前置摄像头</option>
+          </select>
+        </div>
+      </div>
+    </section>
+
+    <aside class="panel">
+      <div class="sideHead">
+        <div>违规记录列表（点击展开详情）</div>
+        <small id="vCount">0 条</small>
+      </div>
+      <ul id="violationList" class="list">
+        <li class="empty">暂无违规记录。开始检测后会实时记录。</li>
+      </ul>
+    </aside>
+  </div>
+
+  <!-- 加载层 -->
+  <div id="loadMask" class="mask">
+    <div class="card">
+      <h3>正在加载 MediaPipe 模型与依赖</h3>
+      <div class="barWrap"><div id="loadBar" class="bar"></div></div>
+      <div id="loadText" class="ptext">正在加载模型... 0%</div>
+      <div id="loadLog" class="log"></div>
+      <div class="actions">
+        <button id="btnRetryLoad" class="btn btn-primary" style="display:none;">重试加载</button>
+        <button id="btnHideLoad" class="btn" type="button">隐藏日志</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 操作前自检 -->
+  <div id="preMask" class="modalMask">
+    <div class="modal">
+      <div class="mHead">操作前自检清单（着装/饰物）</div>
+      <div class="mBody">
+        <div style="margin-bottom:10px;">未全部确认将阻止开始，并分别按规则9/10记录违规。</div>
+        <div class="grid2">
+          <label class="check"><input type="checkbox" id="chkGown" />
+            <div><b>手术衣</b><div class="note">袖口/手臂覆盖到位</div></div>
+          </label>
+          <label class="check"><input type="checkbox" id="chkHair" />
+            <div><b>头发</b><div class="note">完全包裹，无外露</div></div>
+          </label>
+          <label class="check"><input type="checkbox" id="chkMask" />
+            <div><b>口罩</b><div class="note">正确佩戴、贴合</div></div>
+          </label>
+          <label class="check"><input type="checkbox" id="chkNails" />
+            <div><b>指甲</b><div class="note">修剪、无饰/无假指甲</div></div>
+          </label>
+          <label class="check" style="grid-column:1 / -1;">
+            <input type="checkbox" id="chkJewelry" />
+            <div><b>已去除手部饰物</b><div class="note">戒指/手链/手表等已摘除</div></div>
+          </label>
+        </div>
+        <div style="margin-top:12px;color:#5c6f84;font-weight:900;">
+          说明：规则9/10以人工自检为准（纯前端对“饰物凸起/服装合规”不可靠）。
+        </div>
+      </div>
+      <div class="mFoot">
+        <button id="btnPreClose" class="btn">关闭</button>
+        <button id="btnPreConfirm" class="btn btn-primary">确认完成自检</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 操作后自检 -->
+  <div id="postMask" class="modalMask">
+    <div class="modal">
+      <div class="mHead">操作后确认（是否接触非无菌物品）</div>
+      <div class="mBody">
+        <div style="margin-bottom:10px;">规则8：你是否在操作中接触了非无菌物品（例如手机、洗手池边缘、衣物等）。</div>
+        <label class="check" style="border-color:#ffe2a8;background:#fff9e6;">
+          <input type="checkbox" id="chkTouchedObject" />
+          <div>
+            <b>是，我接触了非无菌物品</b>
+            <div class="note">勾选后将记录规则8</div>
+          </div>
+        </label>
+        <div style="margin-top:12px;color:#5c6f84;font-weight:900;">
+          同时系统会做“画面边缘接触风险（简化）”提醒；但是否真的接触仍以你的确认为准。
+        </div>
+      </div>
+      <div class="mFoot">
+        <button id="btnPostConfirm" class="btn btn-primary">确认并生成报告</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 报告 -->
+  <div id="reportMask" class="modalMask">
+    <div class="modal">
+      <div class="mHead">检测结束报告</div>
+      <div class="mBody">
+        <div class="grid2" style="margin-bottom:12px;">
+          <div id="rDuration" class="check" style="background:#f8fbff; border-color:#dce6f5; cursor:default;">
+            <div><b id="rDurationText">总时长：--</b></div>
+          </div>
+          <div id="rResult" class="check" style="background:#f8fbff; border-color:#dce6f5; cursor:default;">
+            <div><b id="rResultText">结论：--</b></div>
+          </div>
+          <div id="rViolations" class="check" style="background:#f8fbff; border-color:#dce6f5; cursor:default;">
+            <div><b id="rViolationsText">违规次数：--</b></div>
+          </div>
+          <div id="rSteps" class="check" style="background:#f8fbff; border-color:#dce6f5; cursor:default;">
+            <div><b id="rStepsText">七步完成度：--</b></div>
+          </div>
+        </div>
+
+        <div style="font-weight:1000;color:#0f4b93;margin-bottom:8px;">详细违规记录</div>
+        <div id="rDetail" style="border:1px solid var(--line);border-radius:12px;background:#f8fbff;padding:12px;white-space:pre-wrap;line-height:1.8;color:#2f4765;"></div>
+
+        <div style="margin-top:12px;color:#5c6f84;font-weight:900;">
+          说明：本报告用于教学/课题记录。导出 CSV 便于统计；PDF 请使用浏览器打印功能。
+        </div>
+      </div>
+      <div class="mFoot">
+        <button id="btnExportCSV" class="btn">导出报告 CSV</button>
+        <button id="btnExportPDF" class="btn">导出 PDF（浏览器打印）</button>
+        <button id="btnCloseReport" class="btn btn-primary">关闭报告</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    /******************************************************************
+     * 紧急修复核心思路
+     * 1) 不再依赖 CameraUtils onFrame（避免 await 堵塞导致“画面定住”）
+     * 2) 使用 getUserMedia 绑定到 videoElement（保证视频流持续）
+     * 3) 使用 requestAnimationFrame 持续循环 detectFrame()
+     * 4) MediaPipe send 采用 async + busyFlag，避免并发堆积卡死主线程
+     *
+     * 你要求“必须包含”的代码片段已按原样放入 setupCamera() / detectFrame() 中。
+     ******************************************************************/
+
+    /***********************
+     * 规则定义（10项）
+     ***********************/
+    const RULES = {
+      1:  { type:"手低于肘部", severity:"高", suggestion:"请保持双手高于肘部，避免污染。" },
+      2:  { type:"手低于腰部", severity:"高", suggestion:"请保持双手高于腰部/臀部，避免污染。" },
+      3:  { type:"手高于肩部", severity:"中", suggestion:"请将双手保持在肩-腰之间的无菌区范围内。" },
+      4:  { type:"触碰面部",   severity:"高", suggestion:"操作中避免触碰面部；必要时按流程重新处理。" },
+      5:  { type:"时间不足",   severity:"中", suggestion:"请完整执行 5 分钟外科手消毒流程。" },
+      6:  { type:"七步洗手法遗漏", severity:"中", suggestion:"请按七步法逐项完成，每步持续至少2秒（简化识别+可手动确认）。" },
+      7:  { type:"手臂角度错误（水倒流风险）", severity:"中", suggestion:"冲洗时前臂角度应 > 45°（手高于肘），避免水倒流。" },
+      8:  { type:"手部触碰物品（风险/确认）", severity:"中", suggestion:"避免接触非无菌物品；若已接触需按流程处理并重新消毒。" },
+      9:  { type:"手部饰物（自检）", severity:"低", suggestion:"请摘除戒指/手链/手表等手部饰物。" },
+      10: { type:"着装规范未确认（自检）", severity:"低", suggestion:"请确认手术衣/头发/口罩/指甲等着装规范。" }
+    };
+
+    /***********************
+     * 七步定义（简化识别 + 用户可手动确认）
+     ***********************/
+    const SEVEN_STEPS = [
+      { key:"palm_to_palm", name:"掌心相对揉搓" },
+      { key:"interlaced", name:"手指交叉揉搓" },
+      { key:"palm_to_dorsum", name:"掌心揉手背" },
+      { key:"fingertip_to_palm", name:"指尖揉掌心" },   // 简化：用启发式近似
+      { key:"thumb_rotate", name:"拇指旋转揉搓" },
+      { key:"fingertip_repeat", name:"指尖揉掌心（重复）" },
+      { key:"wrist_rub", name:"手腕揉搓" }
+    ];
+    const stepState = {};
+    SEVEN_STEPS.forEach(s => stepState[s.key] = { holdMs:0, done:false, manual:false });
+
+    /***********************
+     * DOM
+     ***********************/
+    const el = {
+      timerBadge: document.getElementById("timerBadge"),
+      stateBadge: document.getElementById("stateBadge"),
+
+      dots: document.getElementById("dots"),
+
+      videoWrap: document.getElementById("videoWrap"),
+      video: document.getElementById("video"),
+      overlayStatus: document.getElementById("overlayStatus"),
+      overlayWarn: document.getElementById("overlayWarn"),
+
+      cameraSelect: document.getElementById("cameraSelect"),
+
+      btnPreChecklist: document.getElementById("btnPreChecklist"),
+      btnStart: document.getElementById("btnStart"),
+      btnStop: document.getElementById("btnStop"),
+
+      violationList: document.getElementById("violationList"),
+      vCount: document.getElementById("vCount"),
+
+      loadMask: document.getElementById("loadMask"),
+      loadBar: document.getElementById("loadBar"),
+      loadText: document.getElementById("loadText"),
+      loadLog: document.getElementById("loadLog"),
+      btnRetryLoad: document.getElementById("btnRetryLoad"),
+      btnHideLoad: document.getElementById("btnHideLoad"),
+
+      preMask: document.getElementById("preMask"),
+      btnPreClose: document.getElementById("btnPreClose"),
+      btnPreConfirm: document.getElementById("btnPreConfirm"),
+      chkGown: document.getElementById("chkGown"),
+      chkHair: document.getElementById("chkHair"),
+      chkMask: document.getElementById("chkMask"),
+      chkNails: document.getElementById("chkNails"),
+      chkJewelry: document.getElementById("chkJewelry"),
+
+      postMask: document.getElementById("postMask"),
+      chkTouchedObject: document.getElementById("chkTouchedObject"),
+      btnPostConfirm: document.getElementById("btnPostConfirm"),
+
+      reportMask: document.getElementById("reportMask"),
+      rDurationText: document.getElementById("rDurationText"),
+      rResultText: document.getElementById("rResultText"),
+      rViolationsText: document.getElementById("rViolationsText"),
+      rStepsText: document.getElementById("rStepsText"),
+      rDetail: document.getElementById("rDetail"),
+      btnExportCSV: document.getElementById("btnExportCSV"),
+      btnExportPDF: document.getElementById("btnExportPDF"),
+      btnCloseReport: document.getElementById("btnCloseReport"),
+    };
+
+    /***********************
+     * 状态与计时
+     ***********************/
+    const DURATION_SECONDS = 300;
+    let remainSeconds = DURATION_SECONDS;
+    let timerId = null;
+    let startedAt = null;
+    let endedAt = null;
+
+    let isMonitoring = false;
+
+    /***********************
+     * MediaPipe
+     ***********************/
+    let pose = null;
+    let hands = null;
+    let poseSending = false;
+    let handsSending = false;
+
+    let stream = null;
+    let rafId = null;
+    let isDetecting = false;
+
+    /***********************
+     * 违规记录
+     ***********************/
+    let violationId = 0;
+    const violations = [];
+    const lastRuleAt = {}; // ruleNo -> timestamp for cooldown
+    const RULE_COOLDOWN_MS = 1500;
+
+    function formatTime(sec){
+      sec = Math.max(0, Math.floor(sec));
+      const mm = String(Math.floor(sec/60)).padStart(2,"0");
+      const ss = String(sec%60).padStart(2,"0");
+      return `${mm}:${ss}`;
+    }
+    function elapsedText(){
+      if(!startedAt) return "00:00";
+      const s = Math.floor((Date.now()-startedAt)/1000);
+      return formatTime(s);
+    }
+    function setStateBadge(kind, text){
+      el.stateBadge.classList.remove("ok","warn","done");
+      if(kind === "ok") el.stateBadge.classList.add("ok");
+      if(kind === "warn") el.stateBadge.classList.add("warn");
+      if(kind === "done") el.stateBadge.classList.add("done");
+      el.stateBadge.textContent = "状态：" + text;
+    }
+    function setOverlayNormal(msg){
+      el.videoWrap.classList.remove("violation");
+      el.overlayWarn.style.display = "none";
+      el.overlayWarn.textContent = "";
+      el.overlayStatus.textContent = msg;
+    }
+    function setOverlayViolation(ruleType, suggestion){
+      el.videoWrap.classList.add("violation");
+      el.overlayWarn.style.display = "block";
+      el.overlayWarn.textContent = `违规：${ruleType}\n建议：${suggestion}`;
+    }
+
+    function renderDots(){
+      el.dots.innerHTML = "";
+      SEVEN_STEPS.forEach((s, idx) => {
+        const d = document.createElement("div");
+        d.className = "dot" + (stepState[s.key].done ? " done" : "") + (stepState[s.key].manual ? " manual" : "");
+        d.title = `${idx+1}. ${s.name}\n点击：手动标记完成/取消`;
+        d.onclick = (ev) => {
+          ev.preventDefault();
+          // 允许教学时手动确认：切换 completed 状态
+          stepState[s.key].manual = true;
+          stepState[s.key].done = !stepState[s.key].done;
+          if(!stepState[s.key].done){
+            stepState[s.key].holdMs = 0;
+          }
+          renderDots();
+        };
+        el.dots.appendChild(d);
+      });
+    }
+
+    function doneStepsCount(){
+      return SEVEN_STEPS.filter(s => stepState[s.key].done).length;
+    }
+
+    function renderViolationList(){
+      el.vCount.textContent = `${violations.length} 条`;
+
+      if(!violations.length){
+        el.violationList.innerHTML = `<li class="empty">暂无违规记录。开始检测后会实时记录。</li>`;
+        return;
+      }
+
+      el.violationList.innerHTML = violations.slice().reverse().map(v => {
+        return `
+          <li class="item" data-id="${v.id}">
+            <div class="head">
+              <div>
+                <div class="type">${escapeHtml(v.type)}</div>
+                <div class="meta">时间 ${escapeHtml(v.time)} · 级别 ${escapeHtml(v.severity)}</div>
+              </div>
+              <div style="font-weight:1000;color:#b24a54;">点击展开</div>
+            </div>
+            <div class="body">
+              <div><b>描述：</b>${escapeHtml(v.description)}</div>
+              <div style="margin-top:6px;"><b>建议：</b>${escapeHtml(v.suggestion)}</div>
+              <div style="margin-top:6px;color:#6c7a89;"><b>规则编号：</b>${v.ruleNo}</div>
+            </div>
+          </li>
+        `;
+      }).join("");
+
+      Array.from(el.violationList.querySelectorAll(".item")).forEach(li => {
+        li.querySelector(".head").onclick = () => li.classList.toggle("open");
+      });
+    }
+
+    function escapeHtml(s){
+      return String(s).replace(/[&<>"']/g, c => ({
+        "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"
+      }[c]));
+    }
+
+    function addViolation(ruleNo, description){
+      const rule = RULES[ruleNo];
+      if(!rule) return;
+
+      const now = Date.now();
+      if(lastRuleAt[ruleNo] && now - lastRuleAt[ruleNo] < RULE_COOLDOWN_MS) {
+        // 只做提示不重复写入
+        setOverlayViolation(rule.type, rule.suggestion);
+        return;
+      }
+      lastRuleAt[ruleNo] = now;
+
+      violationId += 1;
+      violations.push({
+        id: violationId,
+        ruleNo,
+        type: rule.type,
+        severity: rule.severity,
+        time: elapsedText(),
+        description,
+        suggestion: rule.suggestion
+      });
+
+      setStateBadge("warn", "违规");
+      setOverlayViolation(rule.type, rule.suggestion);
+
+      renderViolationList();
+    }
+
+    /***********************
+     * 加载 MediaPipe（顺序+备用CDN+加载进度+失败链接）
+     ***********************/
+    function showLoadMask(show){
+      el.loadMask.style.display = show ? "flex" : "none";
+    }
+    function setLoadProgress(pct, text){
+      const p = Math.max(0, Math.min(100, pct));
+      el.loadBar.style.width = p + "%";
+      el.loadText.textContent = `正在加载模型... ${Math.round(p)}%\n${text || ""}`.trim();
+    }
+    function loadLog(line){
+      const t = `[${new Date().toLocaleTimeString()}] ${line}`;
+      el.loadLog.textContent = (el.loadLog.textContent ? el.loadLog.textContent + "\n" : "") + t;
+      console.log(t);
+      el.loadLog.scrollTop = el.loadLog.scrollHeight;
+    }
+
+    function loadScriptOnce(src){
+      return new Promise((resolve, reject) => {
+        const s = document.createElement("script");
+        s.src = src;
+        s.async = false;
+        s.crossOrigin = "anonymous";
+        s.onload = () => resolve(src);
+        s.onerror = () => reject(new Error(src));
+        document.head.appendChild(s);
+      });
+    }
+
+    async function loadWithFallback(name, urls){
+      let errors = [];
+      for(const url of urls){
+        try{
+          loadLog(`尝试加载 ${name}：${url}`);
+          const ok = await loadScriptOnce(url);
+          loadLog(`加载成功 ${name}：${ok}`);
+          return ok;
+        }catch(e){
+          loadLog(`加载失败 ${name}：${url}`);
+          errors.push(url);
+        }
+      }
+      throw new Error(`${name} 所有 CDN 失败：\n- ${errors.join("\n- ")}`);
+    }
+
+    async function bootstrapLoad(){
+      showLoadMask(true);
+      el.btnRetryLoad.style.display = "none";
+      el.loadLog.textContent = "";
+      setLoadProgress(1, "准备加载依赖");
+
+      // 你的要求：正确加载顺序（核心依赖 -> pose -> hands），并在完成后再 init
+      await loadWithFallback("camera_utils", [
+        "https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js",
+        "https://unpkg.com/@mediapipe/camera_utils/camera_utils.js"
+      ]);
+      setLoadProgress(25, "camera_utils 已完成");
+
+      await loadWithFallback("drawing_utils", [
+        "https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js",
+        "https://unpkg.com/@mediapipe/drawing_utils/drawing_utils.js"
+      ]);
+      setLoadProgress(45, "drawing_utils 已完成");
+
+      await loadWithFallback("pose", [
+        "https://cdn.jsdelivr.net/npm/@mediapipe/pose@0.5/pose.js",
+        "https://unpkg.com/@mediapipe/pose/pose.js",
+        "https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js"
+      ]);
+      setLoadProgress(70, "pose 已完成");
+
+      await loadWithFallback("hands", [
+        "https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js",
+        "https://unpkg.com/@mediapipe/hands/hands.js"
+      ]);
+      setLoadProgress(85, "hands 已完成");
+
+      // 检查全局对象
+      const poseCtor = (window.Pose && typeof window.Pose.Pose === "function") ? window.Pose.Pose
+        : (typeof window.Pose === "function" ? window.Pose : null);
+      const handsCtor = (window.Hands && typeof window.Hands.Hands === "function") ? window.Hands.Hands
+        : (typeof window.Hands === "function" ? window.Hands : null);
+
+      loadLog(`[检测] window.Camera: ${typeof window.Camera}`);
+      loadLog(`[检测] window.Pose: ${!!window.Pose}`);
+      loadLog(`[检测] window.Pose.Pose: ${window.Pose && typeof window.Pose.Pose}`);
+      loadLog(`[检测] window.Hands: ${!!window.Hands}`);
+      loadLog(`[检测] window.Hands.Hands: ${window.Hands && typeof window.Hands.Hands}`);
+
+      if(!poseCtor || !handsCtor){
+        throw new Error("脚本加载完成但 Pose/Hands 构造函数缺失。请查看上方失败链接。");
+      }
+
+      // 初始化模型（只在脚本全部加载完成后）
+      const poseBase = "https://cdn.jsdelivr.net/npm/@mediapipe/pose@0.5/";
+      const handsBase = "https://cdn.jsdelivr.net/npm/@mediapipe/hands/";
+
+      pose = new poseCtor({
+        locateFile: (file) => poseBase + file
+      });
+      pose.setOptions({
+        modelComplexity: 1,
+        smoothLandmarks: true,
+        enableSegmentation: false,
+        minDetectionConfidence: 0.5,
+        minTrackingConfidence: 0.5
+      });
+
+      hands = new handsCtor({
+        locateFile: (file) => handsBase + file
+      });
+      hands.setOptions({
+        maxNumHands: 2,
+        modelComplexity: 1,
+        minDetectionConfidence: 0.5,
+        minTrackingConfidence: 0.5
+      });
+
+      // 不画骨架线条：只做违规判断与 UI 提示，不调用 drawConnectors/drawLandmarks
+      pose.onResults((res) => {
+        if(!isMonitoring) return;
+        latestPose = res;
+        if(res && res.poseLandmarks) runPoseRules(res.poseLandmarks);
+      });
+
+      hands.onResults((res) => {
+        if(!isMonitoring) return;
+        latestHands = res;
+        updateSevenStepsFromHands(res);
+      });
+
+      setLoadProgress(100, "依赖加载完成，准备进入自检流程");
+      showLoadMask(false);
+
+      setStateBadge("ok", "待开始");
+      setOverlayNormal("模型已就绪：请先完成“操作前自检清单”。");
+      showPreChecklist(true);
+    }
+
+    let latestPose = null;
+    let latestHands = null;
+
+    /***********************
+     * 摄像头初始化（必须包含你给的代码片段）
+     ***********************/
+    const videoElement = el.video;
+
+    async function setupCamera(){
+      // 1. 请求摄像头权限
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: {
+          width: 640,
+          height: 480,
+          facingMode: el.cameraSelect.value === "user" ? "user" : "environment"
+        }
+      });
+
+      // 2. 将流绑定到 video 元素
+      videoElement.srcObject = stream;
+
+      // 3. 等待视频加载完成
+      await new Promise((resolve) => {
+        videoElement.onloadedmetadata = () => {
+          videoElement.play();
+          resolve();
+        };
+      });
+
+      return stream;
+    }
+
+    /***********************
+     * 持续检测循环（必须包含你给的 detectFrame 片段逻辑）
+     ***********************/
+    async function detectFrame(){
+      if(!isDetecting) return;
+
+      try{
+        // 为保证不会“并发堆积卡住”，加入 busyFlag
+        if(pose && !poseSending && isMonitoring){
+          poseSending = true;
+          await pose.send({ image: videoElement });
+          poseSending = false;
+        }
+        if(hands && !handsSending && isMonitoring){
+          handsSending = true;
+          await hands.send({ image: videoElement });
+          handsSending = false;
+        }
+      }catch(e){
+        console.error("MediaPipe send 失败：", e);
+        addViolation(8, "模型运行中资源/推理失败（可能是网络或CDN不稳定）。请稍后重试或点击重载依赖。");
+        // 不停止视频流，让画面仍可动
+        poseSending = false;
+        handsSending = false;
+      }
+
+      // 边界简化：若近期没有违规，恢复绿色边框（避免一直红）
+      if(Date.now() - lastViolationAt > 1200){
+        el.videoWrap.classList.remove("violation");
+        el.overlayWarn.style.display = "none";
+        if(isMonitoring){
+          setOverlayNormal(`检测中：七步完成度 ${doneStepsCount()}/7`);
+        }
+      }
+
+      // 关键：请求下一帧，保证持续循环
+      rafId = requestAnimationFrame(detectFrame);
+    }
+
+    function startDetectionLoop(){
+      isDetecting = true;
+      if(rafId) cancelAnimationFrame(rafId);
+      detectFrame(); // 启动循环
+    }
+
+    function stopDetectionLoop(){
+      isDetecting = false;
+      if(rafId) cancelAnimationFrame(rafId);
+      rafId = null;
+      poseSending = false;
+      handsSending = false;
+    }
+
+    /***********************
+     * Pose 违规检测（规则1/2/3/4/7/8）
+     ***********************/
+    const L_WR = 15, R_WR = 16;
+    const L_EL = 13, R_EL = 14;
+    const L_SH = 11, R_SH = 12;
+    const L_HIP = 23, R_HIP = 24;
+    const NOSE = 0;
+
+    let lastViolationAt = 0;
+
+    function distPx(a, b, w, h){
+      const dx = (a.x - b.x) * w;
+      const dy = (a.y - b.y) * h;
+      return Math.hypot(dx, dy);
+    }
+    function angleDeg(a, b, c){
+      // 夹角 abc（度）
+      const abx = a.x - b.x, aby = a.y - b.y;
+      const cbx = c.x - b.x, cby = c.y - b.y;
+      const dot = abx*cbx + aby*cby;
+      const mag1 = Math.hypot(abx, aby);
+      const mag2 = Math.hypot(cbx, cby);
+      if(mag1*mag2 === 0) return 180;
+      const cos = Math.max(-1, Math.min(1, dot/(mag1*mag2)));
+      return Math.acos(cos) * 180/Math.PI;
+    }
+
+    function runPoseRules(poseLandmarks){
+      const w = videoElement.videoWidth || 640;
+      const h = videoElement.videoHeight || 480;
+      const wristL = poseLandmarks[L_WR];
+      const wristR = poseLandmarks[R_WR];
+      const elbowL = poseLandmarks[L_EL];
+      const elbowR = poseLandmarks[R_EL];
+      const shoulderL = poseLandmarks[L_SH];
+      const shoulderR = poseLandmarks[R_SH];
+      const hipL = poseLandmarks[L_HIP];
+      const hipR = poseLandmarks[R_HIP];
+      const nose = poseLandmarks[NOSE];
+
+      if(!(wristL && wristR && elbowL && elbowR && shoulderL && shoulderR && hipL && hipR && nose)) return;
+
+      // 归一化阈值（教学可调）
+      const threshold = 0.05;
+      const highThreshold = 0.08;
+
+      const wristY = (wristL.y + wristR.y)/2;
+      const elbowY = (elbowL.y + elbowR.y)/2;
+      const shoulderY = (shoulderL.y + shoulderR.y)/2;
+      const hipY = (hipL.y + hipR.y)/2;
+
+      // 规则1：手低于肘部（wristY > elbowY）
+      if(wristY > elbowY + threshold){
+        lastViolationAt = Date.now();
+        addViolation(1, "手腕位置低于肘部：违反无菌原则（手应高于肘）。");
+      }
+
+      // 规则2：手低于腰部（wristY > hipY）
+      if(wristY > hipY + threshold){
+        lastViolationAt = Date.now();
+        addViolation(2, "手腕位置低于腰/臀部高度：存在污染风险。");
+      }
+
+      // 规则3：手高于肩部（wristY < shoulderY - highThreshold）
+      if(wristY < shoulderY - (highThreshold)){
+        lastViolationAt = Date.now();
+        addViolation(3, "手腕位置过高：超过无菌区上限（高于肩部）。");
+      }
+
+      // 规则4：触碰面部（手与鼻子距离 < 5cm，教学估算）
+      const shoulderPx = distPx(shoulderL, shoulderR, w, h) || (Math.min(w,h)*0.3);
+      const touchThresholdPx = shoulderPx * (5 / 36); // shoulder(约36cm) => 5cm
+      const dL = distPx(wristL, nose, w, h);
+      const dR = distPx(wristR, nose, w, h);
+      if(dL < touchThresholdPx || dR < touchThresholdPx){
+        lastViolationAt = Date.now();
+        addViolation(4, "检测到手靠近/触碰面部区域（与鼻子距离 < 5cm，估计）。");
+      }
+
+      // 规则7：手臂角度错误（水倒流风险）
+      // 冲洗阶段启发式：手在臀/腰以上且手腕相对肘处于抬高姿态时，检查肩-肘-腕角度 < 45°
+      const rinsingLike =
+        ((wristL.y < hipY) || (wristR.y < hipY)) &&
+        ((wristL.y < elbowL.y) || (wristR.y < elbowR.y));
+
+      const leftAngle = angleDeg(shoulderL, elbowL, wristL);
+      const rightAngle = angleDeg(shoulderR, elbowR, wristR);
+
+      if(rinsingLike && (leftAngle < 45 || rightAngle < 45)){
+        lastViolationAt = Date.now();
+        addViolation(7, `冲洗阶段前臂角度过小：左 ${leftAngle.toFixed(1)}° / 右 ${rightAngle.toFixed(1)}°，存在水倒流风险。`);
+      }
+
+      // 规则8：手部触碰物品（简化区域检测）
+      const edgeThreshold = 0.10; // 画面边缘10%
+      const nearEdge = (wristL.x < edgeThreshold || wristL.x > 1 - edgeThreshold) ||
+                        (wristR.x < edgeThreshold || wristR.x > 1 - edgeThreshold);
+      if(nearEdge){
+        lastViolationAt = Date.now();
+        addViolation(8, "手部接近画面边缘（简化区域检测），可能接触洗手池/台面等非无菌物品。");
+      }
+
+      // 如果你希望“检测中无违规就绿色”，这里不频繁改 UI（通过 detectFrame 超时恢复）
+    }
+
+    /***********************
+     * Hands 七步检测（简化启发式 + 每步持续2秒）
+     ***********************/
+    function updateSevenStepsFromHands(handsRes){
+      if(!handsRes || !handsRes.multiHandLandmarks) return;
+      const multi = handsRes.multiHandLandmarks;
+      if(!multi || multi.length < 1) return;
+
+      const now = performance.now();
+      if(!updateSevenStepsFromHands._last) updateSevenStepsFromHands._last = now;
+      const deltaMs = now - updateSevenStepsFromHands._last;
+      updateSevenStepsFromHands._last = now;
+
+      // 为了更稳定，尽量使用两手；单手就只用低置信策略（避免误判）
+      const h1 = multi[0];
+      const h2 = multi[1] || null;
+
+      // hands landmark index：
+      // 0 wrist, 4 thumb_tip, 5 index_mcp, 8 index_tip, 9 middle_mcp, 12 middle_tip, 16 ring_tip, 20 pinky_tip
+      const WR=0, TH=4, IM=5, IT=8, MM=9, MT=12;
+
+      const center = (h) => {
+        const c = h[MM] || h[WR];
+        return c ? {x:c.x, y:c.y} : null;
+      };
+
+      const c1 = center(h1), c2 = h2 ? center(h2) : null;
+      if(!c1) return;
+
+      const distN = (a,b) => {
+        if(!a || !b) return 999;
+        return Math.hypot(a.x-b.x, a.y-b.y);
+      };
+
+      let cond = {};
+      // 各步骤启发式（教学简化，可手动确认纠正）
+      if(c2){
+        cond.palm_to_palm = distN(c1, c2) < 0.13;
+        cond.interlaced = distN(h1[IT], h2[IT]) < 0.07 && distN(h1[MT], h2[MT]) < 0.07;
+        cond.palm_to_dorsum = distN(h1[MM], h2[WR]) < 0.10 || distN(h2[MM], h1[WR]) < 0.10;
+        cond.fingertip_to_palm = distN(h1[IT], h2[MM]) < 0.08 || distN(h2[IT], h1[MM]) < 0.08;
+        cond.thumb_rotate = distN(h1[TH], h2[IM]) < 0.08 || distN(h2[TH], h1[IM]) < 0.08;
+        cond.fingertip_repeat = cond.fingertip_to_palm;
+        cond.wrist_rub = distN(h1[WR], h2[WR]) < 0.12;
+      }else{
+        // 单手状态：不强判（只允许 wrist_rub 和 fingertip_to_palm 轻量条件）
+        cond.palm_to_palm = false;
+        cond.interlaced = false;
+        cond.palm_to_dorsum = false;
+        cond.fingertip_to_palm = false;
+        cond.thumb_rotate = false;
+        cond.fingertip_repeat = false;
+        cond.wrist_rub = false;
+      }
+
+      const HOLD_MS = 2000; // 持续2秒算完成（按你修复版要求）
+      for(const s of SEVEN_STEPS){
+        const st = stepState[s.key];
+        if(st.done) continue;
+        if(st.manual) continue; // 手动确认后不再自动累计
+
+        const k = s.key;
+        // 兼容 cond key 映射
+        const condKey =
+          k === "palm_to_palm" ? "palm_to_palm" :
+          k === "interlaced" ? "interlaced" :
+          k === "palm_to_dorsum" ? "palm_to_dorsum" :
+          k === "fingertip_to_palm" ? "fingertip_to_palm" :
+          k === "thumb_rotate" ? "thumb_rotate" :
+          k === "fingertip_repeat" ? "fingertip_repeat" :
+          k === "wrist_rub" ? "wrist_rub" : null;
+
+        if(condKey && cond[condKey]){
+          st.holdMs += deltaMs;
+          if(st.holdMs >= HOLD_MS){
+            st.done = true;
+          }
+        }else{
+          // 中断回退，防误判
+          st.holdMs = Math.max(0, st.holdMs - deltaMs * 0.6);
+        }
+      }
+
+      renderDots();
+      if(isMonitoring){
+        setOverlayNormal(`检测中：七步完成度 ${doneStepsCount()}/7`);
+      }
+    }
+
+    /***********************
+     * 倒计时与结束流程（规则5、规则6统计在结束时写入）
+     ***********************/
+    function updateTimerUI(){
+      el.timerBadge.textContent = `倒计时：${formatTime(remainSeconds)}`;
+    }
+
+    function startTimer(){
+      stopTimer();
+      timerId = setInterval(() => {
+        remainSeconds -= 1;
+        updateTimerUI();
+        if(remainSeconds <= 0){
+          remainSeconds = 0;
+          updateTimerUI();
+          stopMonitoring("时间到，自动结束");
+        }
+      }, 1000);
+    }
+    function stopTimer(){
+      if(timerId) clearInterval(timerId);
+      timerId = null;
+    }
+
+    function resetSession(){
+      // 七步状态重置
+      SEVEN_STEPS.forEach(s => {
+        stepState[s.key].holdMs = 0;
+        stepState[s.key].manual = false;
+        stepState[s.key].done = false;
+      });
+      renderDots();
+
+      // 违规列表重置
+      violations.length = 0;
+      violationId = 0;
+      for(const k in lastRuleAt) delete lastRuleAt[k];
+
+      el.videoWrap.classList.remove("violation");
+      el.overlayWarn.style.display = "none";
+      el.overlayWarn.textContent = "";
+      setOverlayNormal("准备开始：请保持上半身入镜。");
+
+      remainSeconds = DURATION_SECONDS;
+      updateTimerUI();
+      renderViolationList();
+    }
+
+    function startMonitoring(){
+      if(isMonitoring) return;
+      // 规则10/9：未完成自检则阻止开始并记录
+      const dressOK = el.chkGown.checked && el.chkHair.checked && el.chkMask.checked && el.chkNails.checked;
+      const jewelryOK = el.chkJewelry.checked;
+
+      if(!dressOK){
+        addViolation(10, "未完成着装规范自检（手术衣/头发/口罩/指甲未全部确认），阻止开始。");
+        showPreChecklist(true);
+        alert("请先完成“操作前自检清单”（着装规范）。");
+        return;
+      }
+      if(!jewelryOK){
+        addViolation(9, "未确认手部饰物已摘除，阻止开始。");
+        showPreChecklist(true);
+        alert("请先确认“手部饰物”已摘除。");
+        return;
+      }
+
+      isMonitoring = true;
+      startedAt = Date.now();
+      endedAt = null;
+      remainSeconds = DURATION_SECONDS;
+      updateTimerUI();
+
+      setStateBadge("ok", "正常");
+      setOverlayNormal("检测中：请保持上半身入镜并进行手消毒动作。");
+      resetSevenOnly(); // 七步只重置（不清违规列表已在 start 前处理）
+
+      // 初始化摄像头 + 启动循环
+      initializeAndStartCameraAndLoop();
+    }
+
+    function resetSevenOnly(){
+      SEVEN_STEPS.forEach(s => {
+        stepState[s.key].holdMs = 0;
+        stepState[s.key].manual = false;
+        stepState[s.key].done = false;
+      });
+      renderDots();
+    }
+
+    async function initializeAndStartCameraAndLoop(){
+      try{
+        if(stream){
+          try{ stream.getTracks().forEach(t => t.stop()); }catch(_){}
+          stream = null;
+        }
+
+        stream = await setupCamera();
+
+        // 关键：持续检测循环（rAF）
+        isDetecting = true;
+        startTimer();
+        startDetectionLoop();
+
+        el.btnStart.disabled = true;
+        el.btnStop.disabled = false;
+      }catch(e){
+        console.error("initializeAndStartCameraAndLoop error:", e);
+        isMonitoring = false;
+        stopTimer();
+        stopDetectionLoop();
+        if(stream){
+          try{ stream.getTracks().forEach(t => t.stop()); }catch(_){}
+          stream = null;
+        }
+        const msg = String(e && e.message ? e.message : e);
+        let tip = "启动摄像头失败。请允许摄像头权限并使用 HTTPS 或 http://localhost 打开本页面。";
+        if(/NotAllowedError|Permission|denied/i.test(msg)) tip = "未获得摄像头权限：请在浏览器地址栏处允许摄像头后重试。";
+        if(/secure|Only secure|HTTPS|localhost/i.test(msg)) tip = "安全上下文受限：请使用 HTTPS 或 http://localhost 打开页面后重试。";
+        alert(tip);
+      }
+    }
+
+    function stopMonitoring(reasonText){
+      if(!isMonitoring) return;
+      isMonitoring = false;
+      stopTimer();
+      stopDetectionLoop();
+
+      if(stream){
+        try{ stream.getTracks().forEach(t => t.stop()); }catch(_){}
+        stream = null;
+      }
+
+      endedAt = Date.now();
+      el.btnStart.disabled = false;
+      el.btnStop.disabled = true;
+
+      // 规则5：时间不足
+      const durationSec = startedAt ? Math.floor((endedAt - startedAt)/1000) : 0;
+      if(durationSec < DURATION_SECONDS){
+        addViolation(5, `本次操作时长 ${durationSec} 秒，小于要求 300 秒。`);
+      }
+
+      // 规则6：七步遗漏（结束时统计）
+      const done = doneStepsCount();
+      if(done < 7){
+        const missing = SEVEN_STEPS.filter(s => !stepState[s.key].done).map(s => s.name).join("、");
+        addViolation(6, `七步未完成：仅完成 ${done}/7；缺失：${missing}。`);
+      }
+
+      // 弹出操作后自检，再生成报告
+      setStateBadge("done", "完成");
+      showPostChecklist(true, reasonText);
+
+      // 暂时不停止 overlayWarn；报告会接管
+    }
+
+    /***********************
+     * 弹窗控制
+     ***********************/
+    function showPreChecklist(show){
+      el.preMask.style.display = show ? "flex" : "none";
+    }
+    function showPostChecklist(show, reasonText){
+      if(show){
+        el.chkTouchedObject.checked = false;
+        el.postMask.style.display = "flex";
+        el.overlayStatus.textContent = `检测结束：${reasonText}\n请完成操作后确认以生成报告。`;
+        el.overlayWarn.style.display = "none";
+      }else{
+        el.postMask.style.display = "none";
+      }
+    }
+
+    function showReport(){
+      const durationSec = startedAt && endedAt ? Math.floor((endedAt - startedAt)/1000) : 0;
+      const done = doneStepsCount();
+
+      const highCount = violations.filter(v => v.severity === "高").length;
+      const resultText = highCount === 0 ? "结论：基本合格（无高危违规）" : `结论：需改进（高危违规 ${highCount} 项）`;
+
+      el.rDurationText.textContent = `总时长：${durationSec} 秒（要求 300 秒）`;
+      el.rResultText.textContent = resultText;
+      el.rViolationsText.textContent = `违规次数：${violations.length} 次`;
+      el.rStepsText.textContent = `七步完成度：${done}/7`;
+
+      if(!violations.length){
+        el.rDetail.textContent = "未记录到违规。建议继续练习并提高动作稳定性。";
+      }else{
+        el.rDetail.textContent = violations.map(v => {
+          return `- [${v.time}] （规则${v.ruleNo}）${v.type}【${v.severity}】\n  描述：${v.description}\n  建议：${v.suggestion}`;
+        }).join("\n\n");
+      }
+
+      el.reportMask.style.display = "flex";
+    }
+
+    /***********************
+     * 导出 CSV / PDF
+     ***********************/
+    function exportCSV(){
+      const headers = ["id","time","ruleNo","type","severity","description","suggestion"];
+      const esc = (v) => {
+        const s = String(v ?? "");
+        const needs = /[",\n]/.test(s);
+        const safe = s.replace(/"/g,'""');
+        return needs ? `"${safe}"` : safe;
+      };
+
+      const lines = [headers.join(",")];
+      for(const v of violations){
+        lines.push([
+          esc(v.id),
+          esc(v.time),
+          esc(v.ruleNo),
+          esc(v.type),
+          esc(v.severity),
+          esc(v.description),
+          esc(v.suggestion),
+        ].join(","));
+      }
+
+      const blob = new Blob([lines.join("\n")], {type:"text/csv;charset=utf-8"});
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      const ts = new Date().toISOString().replace(/[:.]/g,"-");
+      a.download = `hand-hygiene-report-${ts}.csv`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    }
+
+    function exportPDF(){
+      // 简化：用浏览器打印导出 PDF
+      // 用户可在打印对话框选择“另存为 PDF”
+      window.print();
+    }
+
+    /***********************
+     * 事件绑定
+     ***********************/
+    el.btnPreChecklist.onclick = () => showPreChecklist(true);
+
+    el.btnStart.onclick = () => {
+      // 重置会话：开始前先清空七步和违规列表（确保“新一局”）
+      resetSession();
+      startMonitoring();
+    };
+
+    el.btnStop.onclick = () => stopMonitoring("手动结束");
+
+    el.btnPreClose.onclick = () => showPreChecklist(false);
+
+    el.btnPreConfirm.onclick = () => {
+      // 这里不直接开始，只是让用户确认自检已完成
+      showPreChecklist(false);
+      setOverlayNormal("自检已确认：点击“开始检测”。");
+    };
+
+    el.btnPostConfirm.onclick = () => {
+      // 规则8：操作后自检确认（手动）
+      if(el.chkTouchedObject.checked){
+        addViolation(8, "操作后自检：用户确认接触了非无菌物品。");
+      }
+
+      showPostChecklist(false);
+      showReport();
+    };
+
+    el.btnExportCSV.onclick = exportCSV;
+    el.btnExportPDF.onclick = exportPDF;
+    el.btnCloseReport.onclick = () => {
+      el.reportMask.style.display = "none";
+      setOverlayNormal("报告已生成。可关闭后重新开始下一次练习。");
+      setStateBadge("done", "完成");
+    };
+
+    el.btnHideLoad.onclick = () => {
+      el.loadLog.style.display = "none";
+    };
+
+    el.btnRetryLoad.onclick = async () => {
+      try{
+        await bootstrapLoad();
+      }catch(e){
+        console.error(e);
+        alert("重试加载失败，请检查网络/CDN可访问性并再试一次。");
+      }
+    };
+
+    /***********************
+     * 页面初始化：加载 MediaPipe -> 弹出前自检
+     ***********************/
+    window.addEventListener("load", async () => {
+      renderDots();
+      renderViolationList();
+      updateTimerUI();
+      setOverlayNormal("系统启动中：加载依赖…");
+
+      try{
+        await bootstrapLoad();
+      }catch(e){
+        console.error("bootstrapLoad error:", e);
+        showLoadMask(true);
+        setLoadProgress(100, "加载失败");
+        el.btnRetryLoad.style.display = "inline-flex";
+        loadLog(String(e && e.message ? e.message : e));
+        setStateBadge("warn", "异常");
+        el.overlayStatus.textContent = "模型加载失败：请查看上方加载日志中的失败链接，并点击“重试加载”。";
+      }
+    });
+  </script>
+</body>
+</html>
